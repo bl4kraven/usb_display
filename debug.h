@@ -2,12 +2,12 @@
 #define __DEBUG_H__
 
 #undef DBG
-//#define DBG(x...) printk(KERN_ERR x)
-#define DBG(x...) printk(KERN_DEBUG x)
+#define DBG(x...) printk(KERN_ERR x)
+//#define DBG(x...) printk(KERN_DEBUG x)
 
 #undef DBG_DEV
-//#define DBG_DEV(cdev, x...) dev_err(&cdev->gadget->dev, x)
-#define DBG_DEV(cdev, x...) dev_dbg(&cdev->gadget->dev, x)
+#define DBG_DEV(cdev, x...) dev_err(&cdev->gadget->dev, x)
+//#define DBG_DEV(cdev, x...) dev_dbg(&cdev->gadget->dev, x)
 
 #undef ERR
 #define ERR(x...) printk(KERN_ERR x)

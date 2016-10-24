@@ -10,7 +10,6 @@
 #include "debug.h"
 #include "f_display.h"
 #include "protocol.h"
-#include "pixcir_i2c_ts.h"
 
 #define RP_DISP_DEFAULT_HEIGHT      480
 #define RP_DISP_DEFAULT_WIDTH       800
@@ -39,9 +38,6 @@ struct f_display
 	struct usb_function	function;
 	struct usb_ep		*in_ep;
 	struct usb_ep		*out_ep;
-
-    // for touch
-	struct usb_request		*req;
 
     // bind framebuffer
     struct fb_info *fb;
@@ -185,22 +181,9 @@ static int display_bind(struct usb_configuration *c, struct usb_function *f)
 	if (!display->in_ep) {
 autoconf_fail:
 		ERR_DEV(cdev, "%s: can't autoconfigure on %s\n", f->name, cdev->gadget->name);
-        if (display->req != NULL) {
-            if (display->req->buf)
-                kfree(display->req->buf);
-            usb_ep_free_request(display->in_ep, display->req);
-        }
 		return -ENODEV;
 	}
 	display->in_ep->driver_data = cdev;	/* claim */
-
-    display->req = usb_ep_alloc_request(display->in_ep, GFP_KERNEL);
-    if (!display->req)
-        goto autoconf_fail;
-
-	display->req->buf = kmalloc(USB_TOUCH_PACKET_SIZE, GFP_KERNEL);
-	if (!display->req->buf)
-		goto autoconf_fail;
 
 	display->out_ep = usb_ep_autoconfig(cdev->gadget, &fs_display_sink_desc);
 	if (!display->out_ep)
@@ -349,10 +332,10 @@ fail0:
 	}
 	ep->driver_data = display;
 
-    req = usb_ep_alloc_request(display->out_ep, GFP_ATOMIC);
+    req = usb_ep_alloc_request(display->out_ep, GFP_KERNEL);
     if (req) {
         req->length = USB_BULK_MAX_PACKET;
-        req->buf = kmalloc(req->length, GFP_ATOMIC);
+        req->buf = kmalloc(req->length, GFP_KERNEL);
         if (!req->buf) {
             usb_ep_free_request(ep, req);
             req = NULL;
@@ -362,26 +345,10 @@ fail0:
     if (req)
     {
         req->complete = display_complete;
-        result = usb_ep_queue(display->out_ep, req, GFP_ATOMIC);
+        result = usb_ep_queue(display->out_ep, req, GFP_KERNEL);
         if (result)
             DBG_DEV(cdev, "%s queue req --> %d\n", ep->name, result);
     }
-
-	//for (i = 0; i < qlen && result == 0; i++) {
-	//	req = alloc_ep_req(ep, 0);
-	//	if (req) {
-	//		req->complete = display_complete;
-	//		result = usb_ep_queue(ep, req, GFP_ATOMIC);
-	//		if (result)
-	//			DBG_DEV(cdev, "%s queue req --> %d\n",
-	//					ep->name, result);
-	//	} else {
-	//		usb_ep_disable(ep);
-	//		ep->driver_data = NULL;
-	//		result = -ENOMEM;
-	//		goto fail0;
-	//	}
-	//}
 
 	DBG_DEV(cdev, "%s enabled\n", display->function.name);
 	return result;
@@ -439,6 +406,7 @@ static void display_do_tasklet(unsigned long data)
                 unsigned char section_head;
                 int copy_len = 0;
                 int cur_len = 0;
+                int i;
                 while ((data-data_origin) < cur_buffer->count)
                 {
                     section_head = data[0];
@@ -449,7 +417,7 @@ static void display_do_tasklet(unsigned long data)
 #if RP_DISP_DEFAULT_PIXEL_BITS != 16
 #error "not support now"
 #endif
-                        for (int i=0; i<(cur_len/2); i++, dst+=2)
+                        for (i=0; i<(cur_len/2); i++, dst+=2)
                         {
                             *(unsigned short *)dst = *(unsigned short *)data;
                         }
@@ -486,60 +454,12 @@ static void display_do_tasklet(unsigned long data)
     }
 }
 
-static void f_touch_req_complete(struct usb_ep *ep, struct usb_request *req)
-{
-    DBG("touch request OK\n");
-    if (req->status != 0) 
-    {
-        ERR("touch request fail!\n");
-    }
-}
-
-static void touch_callback(int touch, int x, int y, void *data)
-{
-    struct f_display *display = (struct f_display *)data;
-    rpusbdisp_status_normal_packet_t packet;
-    memset(&packet, 0, sizeof(packet));
-    packet.touch_status = touch;
-    packet.touch_x = x;
-    packet.touch_y = y;
-
-	display->req->status   = 0;
-	display->req->zero     = 0;
-	display->req->length   = USB_TOUCH_PACKET_SIZE;
-	display->req->complete = f_touch_req_complete;
-	//display->req->complete = NULL;
-	memcpy(display->req->buf, &packet, USB_TOUCH_PACKET_SIZE);
-	int result = usb_ep_queue(display->in_ep, display->req, GFP_ATOMIC);
-    if (result)
-        DBG("%s queue req --> %d\n", display->in_ep->name, result);
-
-    DBG("touch:%d x:%d y:%d\n", touch, x, y);
-}
-
 /*-------------------------------------------------------------------------*/
-static struct usb_function_instance display_function_instance = {};
-static void display_free_instance(struct usb_function_instance *fi)
-{
-}
-
-static struct usb_function_instance *display_alloc_instance(void)
-{
-    display_function_instance.free_func_inst = display_free_instance;
-	return  &display_function_instance;
-}
-
-static void display_free_func(struct usb_function *f)
+static void display_unbind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct f_display *display = func_to_display(f);
 
-    pixcir_exit();
-
-	/* disable/free request and end point */
-	usb_ep_disable(display->in_ep);
-	usb_ep_dequeue(display->in_ep, display->req);
-	kfree(display->req->buf);
-	usb_ep_free_request(display->in_ep, display->req);
+    tasklet_disable(&display_tasklet);
 
 	usb_free_all_descriptors(f);
     vfree(display->buffers);
@@ -552,22 +472,24 @@ static void display_free_func(struct usb_function *f)
     }
 
 	kfree(display);
+    DBG("display_unbind\n");
 }
 
-static struct usb_function *display_alloc(struct usb_function_instance *fi)
+int __init add_display_function(struct usb_configuration *c)
 {
     int ret;
+    struct fb_info *fb0 = NULL;
 	struct f_display *display = kzalloc(sizeof(struct f_display), GFP_KERNEL);
 	if (!display)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	display->function.name = "display";
 	display->function.bind = display_bind;
 	display->function.set_alt = display_set_alt;
 	display->function.disable = display_disable;
 	display->function.strings = display_strings;
-	display->function.free_func = display_free_func;
-
+	//display->function.free_func = display_free_func;
+    display->function.unbind = display_unbind;
     display->buffers = vmalloc_32(sizeof(struct display_buffer)*BUFFER_COUNT);
     if (!display->buffers)
     {
@@ -575,11 +497,10 @@ static struct usb_function *display_alloc(struct usb_function_instance *fi)
         goto VMALLOC;
     }
 	memset(display->buffers, 0, sizeof(struct display_buffer)*BUFFER_COUNT); 
-
     display->buffer_head = display->buffers;
     display->buffer_tail = display->buffers;
 
-    struct fb_info *fb0 = registered_fb[0];
+    fb0 = registered_fb[0];
     if (fb0)
     {
         if (fb0->fbops->owner && !try_module_get(fb0->fbops->owner))
@@ -602,7 +523,6 @@ static struct usb_function *display_alloc(struct usb_function_instance *fi)
             }
             mutex_unlock(&fb0->lock);
         }
-
         display->fb = fb0;
     }
     else
@@ -612,33 +532,14 @@ static struct usb_function *display_alloc(struct usb_function_instance *fi)
         goto VMALLOC;
     }
 
-    // init pixcir touch panel
-    if (pixcir_init(touch_callback, display))
+	ret = usb_add_function(c, &display->function);
+	if (ret)
     {
-        ret = -ENODEV;
         goto VMALLOC;
     }
 
-	return &display->function;
-
+    return ret;
 VMALLOC:
-        kfree(display);
-		return ERR_PTR(ret);
-}
-
-DECLARE_USB_FUNCTION(Display, display_alloc_instance, display_alloc);
-
-int __init display_function_init(void)
-{
-    DBG("display function register\n");
-    // 分配usb_function_inst时会get 模块，导致卸载时失败
-    Displayusb_func.mod = NULL;
-	return usb_function_register(&Displayusb_func);
-}
-
-void __exit display_function_exit(void)
-{
-    tasklet_disable(&display_tasklet);
-    DBG("display function unregister\n");
-	usb_function_unregister(&Displayusb_func);
+    kfree(display);
+	return ret;
 }

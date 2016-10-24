@@ -4,6 +4,7 @@
 #include <linux/usb/composite.h>
 
 #include "f_display.h"
+#include "f_hid.h"
 
 /* Defines */
 
@@ -45,7 +46,8 @@ static struct usb_device_descriptor device_desc = {
 	.bLength =		USB_DT_DEVICE_SIZE,
 	.bDescriptorType =	USB_DT_DEVICE,
 	.bcdUSB =		cpu_to_le16(0x0200),
-	.bDeviceClass =  USB_CLASS_VENDOR_SPEC,
+	//.bDeviceClass =  USB_CLASS_VENDOR_SPEC,
+	.bDeviceClass =  USB_CLASS_PER_INTERFACE,
 	.bDeviceSubClass =	0,
 	.bDeviceProtocol =	0,
 	/* .bMaxPacketSize0 = f(hardware) */
@@ -63,9 +65,6 @@ static struct usb_configuration serial_config_driver = {
 	/* .iConfiguration = DYNAMIC */
 	.bmAttributes	= USB_CONFIG_ATT_SELFPOWER,
 };
-
-static struct usb_function *func_display;
-static struct usb_function_instance *func_inst_display;
 
 static int __init gs_bind(struct usb_composite_dev *cdev)
 {
@@ -85,16 +84,6 @@ static int __init gs_bind(struct usb_composite_dev *cdev)
     // 如果版本小于1.04协议会不同
     cdev->desc.bcdDevice = cpu_to_le16(GS_VERSION_NUM);
 
-	func_inst_display = usb_get_function_instance("Display");
-	if (IS_ERR(func_inst_display))
-		return PTR_ERR(func_inst_display);
-
-	func_display = usb_get_function(func_inst_display);
-	if (IS_ERR(func_display)) {
-		status = PTR_ERR(func_display);
-		goto err_put_func_inst_display;
-	}
-
     serial_config_driver.iConfiguration = strings_dev[STRING_DESCRIPTION_IDX].id;
 	/* support autoresume for remote wakeup testing */
 	serial_config_driver.bmAttributes &= ~USB_CONFIG_ATT_WAKEUP;
@@ -103,30 +92,17 @@ static int __init gs_bind(struct usb_composite_dev *cdev)
 	//	serial_config_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
 	//}
 
-	/* Register primary, then secondary configuration.  Note that
-	 * SH3 only allows one config...
-	 */
     usb_add_config_only(cdev, &serial_config_driver);
-	status = usb_add_function(&serial_config_driver, func_display);
-	if (status)
-		goto err_put_func_display;
+    //return add_hid_function(&serial_config_driver);
+    status = add_hid_function(&serial_config_driver);
+    if (status)
+        return status;
 
-	return 0;
-
-err_put_func_display:
-	usb_put_function(func_display);
-	func_display = NULL;
-err_put_func_inst_display:
-	usb_put_function_instance(func_inst_display);
-	func_inst_display = NULL;
-	return status;
+    return add_display_function(&serial_config_driver);
 }
 
 static int gs_unbind(struct usb_composite_dev *cdev)
 {
-	if (!IS_ERR_OR_NULL(func_display))
-		usb_put_function(func_display);
-	usb_put_function_instance(func_inst_display);
 	return 0;
 }
 
@@ -141,7 +117,6 @@ static __refdata struct usb_composite_driver usb_display_driver = {
 
 static int __init init(void)
 {
-    display_function_init();
     return usb_composite_probe(&usb_display_driver);
 }
 module_init(init);
@@ -149,7 +124,6 @@ module_init(init);
 static void __exit cleanup(void)
 {
 	usb_composite_unregister(&usb_display_driver);
-    display_function_exit();
 }
 module_exit(cleanup);
 

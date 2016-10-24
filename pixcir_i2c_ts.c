@@ -172,6 +172,8 @@ static irqreturn_t pixcir_ts_isr(int irq, void *dev_id)
     struct pixcir_i2c_ts_data *tsdata = dev_id;
     const struct pixcir_ts_platform_data *pdata = tsdata->pdata;
     struct pixcir_report_data report;
+    int x_old = 0;
+    int y_old = 0;
 
     while (tsdata->running) {
         /* parse packet */
@@ -193,7 +195,7 @@ static irqreturn_t pixcir_ts_isr(int irq, void *dev_id)
             // only support one touch
             if (g_fun)
             {
-                g_fun(0, report.touches[0].x, report.touches[0].y, g_data);
+                g_fun(0, x_old, y_old, g_data);
             }
             break;
         }
@@ -202,6 +204,8 @@ static irqreturn_t pixcir_ts_isr(int irq, void *dev_id)
         if (g_fun)
         {
             g_fun(1, report.touches[0].x, report.touches[0].y, g_data);
+            x_old = report.touches[0].x;
+            y_old = report.touches[0].y;
         }
 
         msleep(20);
